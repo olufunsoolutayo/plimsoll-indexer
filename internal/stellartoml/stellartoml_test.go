@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,6 +96,47 @@ func TestFetchOK(t *testing.T) {
 	info, err := f.Fetch(context.Background(), "example.money", "USDX", "GISSUER")
 	if err != nil || info.Currency == nil {
 		t.Fatalf("got %+v, %v", info, err)
+	}
+}
+
+func TestFetchFollowsUpToFiveRedirects(t *testing.T) {
+	for _, redirects := range []int{5, 6} {
+		t.Run(fmt.Sprintf("redirects_%d", redirects), func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var hop int
+				if _, err := fmt.Sscanf(r.URL.Path, "/%d", &hop); err != nil {
+					t.Errorf("parse redirect path %q: %v", r.URL.Path, err)
+					return
+				}
+				if hop < redirects {
+					http.Redirect(w, r, fmt.Sprintf("/%d", hop+1), http.StatusFound)
+					return
+				}
+				_, _ = w.Write([]byte(sample))
+			}))
+			defer srv.Close()
+
+			f := NewFetcher()
+			f.URLFor = func(string) string { return srv.URL + "/0" }
+			info, err := f.Fetch(context.Background(), "example.money", "USDX", "GISSUER")
+			if redirects == maxRedirects {
+				if err != nil || info.Currency == nil {
+					t.Fatalf("Fetch after %d redirects: info=%+v err=%v", redirects, info, err)
+				}
+				if requests != redirects+1 {
+					t.Fatalf("got %d requests, want %d", requests, redirects+1)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("Fetch after %d redirects succeeded, want limit error", redirects)
+				}
+				if requests != maxRedirects+1 {
+					t.Fatalf("got %d requests before rejection, want %d", requests, maxRedirects+1)
+				}
+			}
+		})
 	}
 }
 
