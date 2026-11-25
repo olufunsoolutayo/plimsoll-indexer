@@ -31,6 +31,7 @@ type Reader interface {
 	Ping(ctx context.Context) error
 	ListAssets(ctx context.Context) ([]coverage.Asset, error)
 	GetAsset(ctx context.Context, sac string) (coverage.Asset, error)
+	BatchCoverage(ctx context.Context, sacs []string) (map[string]store.CoverageData, error)
 	LatestSupply(ctx context.Context, sac string) (*coverage.Supply, error)
 	SupplyHistory(ctx context.Context, sac string, limit int) ([]coverage.Supply, error)
 	LatestReports(ctx context.Context, sac string) (map[uint32]coverage.Report, error)
@@ -72,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /openapi.yaml", s.openAPI)
 	mux.HandleFunc("GET /v1/network", s.network)
 	mux.HandleFunc("GET /v1/assets", s.listAssets)
+	mux.HandleFunc("POST /v1/assets/batch-covered", s.batchCoverage)
 	mux.HandleFunc("GET /v1/assets/{sac}", s.getAsset)
 	mux.HandleFunc("GET /v1/assets/{sac}/supply", s.supplyHistory)
 	mux.HandleFunc("GET /v1/assets/{sac}/reports", s.reportHistory)
@@ -118,6 +120,11 @@ type assetJSON struct {
 	Supply   *supplyJSON            `json:"supply"`
 	Reports  map[string]*reportJSON `json:"reports"`
 	Coverage *coverageJSON          `json:"coverage"`
+}
+
+type batchCoverageItemJSON struct {
+	SAC      string        `json:"sac"`
+	Coverage *coverageJSON `json:"coverage"`
 }
 
 type reporterJSON struct {
@@ -258,6 +265,43 @@ func (s *Server) getAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, aj)
+}
+
+func (s *Server) batchCoverage(w http.ResponseWriter, r *http.Request) {
+	const maxAssets = 50
+	const maxBodyBytes = 4096
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil || len(body) > maxBodyBytes {
+		writeError(w, http.StatusBadRequest, "request body must be a JSON array of 1 to 50 SAC addresses")
+		return
+	}
+	var sacs []string
+	if err := json.Unmarshal(body, &sacs); err != nil || len(sacs) == 0 || len(sacs) > maxAssets {
+		writeError(w, http.StatusBadRequest, "request body must be a JSON array of 1 to 50 SAC addresses")
+		return
+	}
+	for _, sac := range sacs {
+		if !strkey.IsValidContractAddress(sac) {
+			writeError(w, http.StatusBadRequest, "each asset must be a contract strkey")
+			return
+		}
+	}
+
+	data, err := s.Store.BatchCoverage(r.Context(), sacs)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	out := make([]batchCoverageItemJSON, 0, len(sacs))
+	for _, sac := range sacs {
+		item := data[sac]
+		out = append(out, batchCoverageItemJSON{
+			SAC:      sac,
+			Coverage: s.toCoverage(coverage.Compute(item.Supply, item.Reports, coverage.TierTranscribed)),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"assets": out})
 }
 
 func (s *Server) assemble(ctx context.Context, a coverage.Asset, minTier uint32) (assetJSON, error) {
