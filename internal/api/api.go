@@ -274,23 +274,40 @@ func (s *Server) getAsset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, aj)
 }
 
+func (s *Server) headAsset(w http.ResponseWriter, r *http.Request) {
+	sac, ok := parseSAC(w, r)
+	if !ok {
+		return
+	}
+	_, err := s.Store.GetAsset(r.Context(), sac)
+	if errors.Is(err, store.ErrNotFound) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) batchCoverage(w http.ResponseWriter, r *http.Request) {
 	const maxAssets = 50
 	const maxBodyBytes = 4096
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil || len(body) > maxBodyBytes {
-		writeError(w, http.StatusBadRequest, "request body must be a JSON array of 1 to 50 SAC addresses")
+		writeError(w, http.StatusBadRequest, codeInvalidBody, "request body must be a JSON array of 1 to 50 SAC addresses")
 		return
 	}
 	var sacs []string
 	if err := json.Unmarshal(body, &sacs); err != nil || len(sacs) == 0 || len(sacs) > maxAssets {
-		writeError(w, http.StatusBadRequest, "request body must be a JSON array of 1 to 50 SAC addresses")
+		writeError(w, http.StatusBadRequest, codeInvalidBody, "request body must be a JSON array of 1 to 50 SAC addresses")
 		return
 	}
 	for _, sac := range sacs {
 		if !strkey.IsValidContractAddress(sac) {
-			writeError(w, http.StatusBadRequest, "each asset must be a contract strkey")
+			writeError(w, http.StatusBadRequest, codeInvalidSAC, "each asset must be a contract strkey")
 			return
 		}
 	}

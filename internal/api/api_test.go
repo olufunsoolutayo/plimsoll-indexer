@@ -197,6 +197,44 @@ func TestGetAssetCoverage(t *testing.T) {
 	}
 }
 
+func TestHeadAsset(t *testing.T) {
+	srv := server()
+	defer srv.Close()
+
+	unlisted := unlistedSAC(t)
+	for _, test := range []struct {
+		sac        string
+		wantStatus int
+	}{
+		{sac: sac, wantStatus: http.StatusOK},
+		{sac: unlisted, wantStatus: http.StatusNotFound},
+		{sac: "invalid", wantStatus: http.StatusBadRequest},
+	} {
+		req, err := http.NewRequest(http.MethodHead, srv.URL+"/v1/assets/"+test.sac, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if resp.StatusCode != test.wantStatus {
+			t.Errorf("HEAD %q: status %d, want %d", test.sac, resp.StatusCode, test.wantStatus)
+		}
+		if len(body) != 0 {
+			t.Errorf("HEAD %q returned body %q", test.sac, body)
+		}
+	}
+}
+
 func TestBatchCoverage(t *testing.T) {
 	unlisted := unlistedSAC(t)
 	f := &fake{
@@ -267,6 +305,20 @@ func TestBatchCoverageRejectsEmptyOversizedAndInvalidRequests(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("body %q: status %d, want 400", body, rec.Code)
+		}
+		var response struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Errorf("body %q: invalid error response: %v", body, err)
+		} else {
+			wantCode := codeInvalidBody
+			if body == `["not-a-contract"]` {
+				wantCode = codeInvalidSAC
+			}
+			if response.Code != wantCode {
+				t.Errorf("body %q: error code %q, want %q", body, response.Code, wantCode)
+			}
 		}
 	}
 	if f.batchCalls != 0 {
