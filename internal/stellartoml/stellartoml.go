@@ -20,6 +20,8 @@ import (
 // maxTomlBytes matches the SEP-1 limit of 100KB.
 const maxTomlBytes = 100 * 1024
 
+const maxRedirects = 5
+
 // Currency is the subset of a [[CURRENCIES]] entry Plimsoll shows.
 type Currency struct {
 	Code                   string `toml:"code" json:"code"`
@@ -56,7 +58,15 @@ type Fetcher struct {
 
 func NewFetcher() *Fetcher {
 	return &Fetcher{
-		HTTP: &http.Client{Timeout: 10 * time.Second},
+		HTTP: &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+				if len(via) > maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
+				}
+				return nil
+			},
+		},
 		URLFor: func(domain string) string {
 			return "https://" + domain + "/.well-known/stellar.toml"
 		},
