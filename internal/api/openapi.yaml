@@ -252,6 +252,65 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/assets/{sac}/audit:
+    get:
+      summary: Get the coverage audit trail for an asset
+      operationId: getAssetAudit
+      description: >-
+        Returns indexed asset listing, supply-posted, and report-posted events
+        ordered by ledger and event ID ascending. Retractions, disputes,
+        threshold changes, and alias changes are not currently indexed.
+      parameters:
+        - name: sac
+          in: path
+          required: true
+          description: Stellar Asset Contract (SAC) address
+          schema:
+            type: string
+            pattern: '^C[A-Z2-7]{55}$'
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of events to return (1-1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned by the previous page
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audit events in ascending ledger order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  next_cursor:
+                    type: string
+                required:
+                  - events
+        '400':
+          description: Invalid cursor, limit, or SAC
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/reporters:
     get:
       summary: List registered reporters and their roles
@@ -529,6 +588,20 @@ components:
         - doc_hash
         - doc_uri
         - tx_hash
+    AuditEvent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [asset_listed, supply_posted, report_posted]
+        actor:
+          type: string
+        ledger:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+      required: [type, actor, ledger, timestamp]
     Coverage:
       type: object
       properties:

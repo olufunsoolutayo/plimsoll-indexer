@@ -45,6 +45,7 @@ type fake struct {
 	supply  map[string]*coverage.Supply
 	reports map[string]map[uint32]coverage.Report
 	bodies  map[string][]byte
+	audit   []store.AuditEvent
 }
 
 func (f *fake) Ping(context.Context) error { return nil }
@@ -89,6 +90,19 @@ func (f *fake) Breakdown(_ context.Context, h string) ([]byte, error) {
 		return b, nil
 	}
 	return nil, store.ErrNotFound
+}
+func (f *fake) AuditHistory(_ context.Context, sac string, after *store.AuditCursor, limit int) ([]store.AuditEvent, error) {
+	var out []store.AuditEvent
+	for _, event := range f.audit {
+		if after != nil && (event.Ledger < after.Ledger || event.Ledger == after.Ledger && event.ID <= after.ID) {
+			continue
+		}
+		out = append(out, event)
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 func (f *fake) Progress(context.Context, string) (store.Progress, error) {
 	return store.Progress{
@@ -309,6 +323,7 @@ func TestUnlistedPathIDs(t *testing.T) {
 		"/v1/assets/" + unknown,
 		"/v1/assets/" + unknown + "/supply",
 		"/v1/assets/" + unknown + "/reports",
+		"/v1/assets/" + unknown + "/audit",
 	} {
 		body := get(t, srv, path, 404)
 		if body["code"] != "asset_not_listed" || body["message"] != "asset not listed" {
@@ -396,6 +411,51 @@ func TestListedAssetHistory(t *testing.T) {
 	}
 	if got := get(t, srv, "/v1/assets/"+sac+"/reports", 200)["reports"].([]any); len(got) != 1 {
 		t.Fatalf("report history %+v", got)
+	}
+}
+
+func TestAuditHistoryPagination(t *testing.T) {
+	f := &fake{
+		assets: []coverage.Asset{{SAC: sac, Code: "PUSD", Issuer: "GISS"}},
+		audit: []store.AuditEvent{
+			{ID: "event-a", Type: "asset_listed", Actor: "GISS", Ledger: 10, Timestamp: now},
+			{ID: "event-b", Type: "report_posted", Actor: "GAUD", Ledger: 11, Timestamp: now.Add(time.Second)},
+			{ID: "event-c", Type: "supply_posted", Actor: "GPOST", Ledger: 11, Timestamp: now.Add(2 * time.Second)},
+		},
+	}
+	s := &Server{
+		Store:     f,
+		CORS:      []string{"*"},
+		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:       func() time.Time { return now },
+		Changelog: testChangelog,
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	first := get(t, srv, "/v1/assets/"+sac+"/audit?limit=2", http.StatusOK)
+	entries := first["events"].([]any)
+	if len(entries) != 2 || entries[0].(map[string]any)["ledger"] != float64(10) ||
+		entries[1].(map[string]any)["actor"] != "GAUD" {
+		t.Fatalf("first page events: %+v", entries)
+	}
+	cursor, ok := first["next_cursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("expected next_cursor, got %+v", first)
+	}
+	second := get(t, srv, "/v1/assets/"+sac+"/audit?limit=2&cursor="+cursor, http.StatusOK)
+	next := second["events"].([]any)
+	if len(next) != 1 || next[0].(map[string]any)["type"] != "supply_posted" || second["next_cursor"] != nil {
+		t.Fatalf("second page: %+v", second)
+	}
+}
+
+func TestAuditHistoryRejectsInvalidCursor(t *testing.T) {
+	srv := server()
+	defer srv.Close()
+	body := get(t, srv, "/v1/assets/"+sac+"/audit?cursor=not-valid", http.StatusBadRequest)
+	if body["code"] != "invalid_cursor" {
+		t.Fatalf("response %+v", body)
 	}
 }
 

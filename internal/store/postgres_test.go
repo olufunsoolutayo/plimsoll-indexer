@@ -160,6 +160,59 @@ func testPool(t *testing.T, url string) *pgxpool.Pool {
 	return p
 }
 
+func TestAuditHistoryOrdersAndPaginatesByLedgerAndEventID(t *testing.T) {
+	s, _ := openStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 25, 5, 0, 0, 0, time.UTC)
+	events := []any{
+		soroban.AssetListed{
+			Meta:   soroban.Meta{ID: "asset-event", Ledger: 99, ClosedAt: at},
+			SAC:    "CSAC",
+			Code:   "PUSD",
+			Issuer: "GISSUER",
+		},
+		soroban.SupplyPosted{
+			Meta:          soroban.Meta{ID: "z-supply-event", Ledger: 100, ClosedAt: at.Add(time.Minute)},
+			SAC:           "CSAC",
+			Amount:        big.NewInt(500),
+			AtLedger:      99,
+			BreakdownHash: "hash",
+			Poster:        "GPOSTER",
+		},
+		soroban.ReservePosted{
+			Meta:     soroban.Meta{ID: "a-report-event", Ledger: 100, ClosedAt: at.Add(2 * time.Minute)},
+			SAC:      "CSAC",
+			Tier:     1,
+			Amount:   big.NewInt(300),
+			AsOf:     at,
+			Reporter: "GREPORTER",
+			DocHash:  "doc-hash",
+			DocURI:   "https://example.com/report",
+		},
+	}
+	if err := s.ApplyEvents(ctx, "plimsoll-events", "cursor", 100, events); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.AuditHistory(ctx, "CSAC", nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].ID != "asset-event" || first[1].ID != "a-report-event" {
+		t.Fatalf("first page = %+v, want asset then report by event ID", first)
+	}
+	if first[0].Type != "asset_listed" || first[0].Actor != "GISSUER" || first[1].Type != "report_posted" {
+		t.Fatalf("audit event fields = %+v", first)
+	}
+	second, err := s.AuditHistory(ctx, "CSAC", &AuditCursor{Ledger: first[1].Ledger, ID: first[1].ID}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].ID != "z-supply-event" || second[0].Ledger != 100 {
+		t.Fatalf("second page = %+v, want the remaining supply event", second)
+	}
+}
+
 func TestIssuerTomlSnapshotsDetectChanges(t *testing.T) {
 	s, _ := openStore(t)
 	ctx := context.Background()
